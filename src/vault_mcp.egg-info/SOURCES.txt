@@ -1,0 +1,16 @@
+LICENSE
+README.md
+pyproject.toml
+src/vault_mcp/__init__.py
+src/vault_mcp/embeddings.py
+src/vault_mcp/search.py
+src/vault_mcp/server.py
+src/vault_mcp/storage.py
+src/vault_mcp.egg-info/PKG-INFO
+src/vault_mcp.egg-info/SOURCES.txt
+src/vault_mcp.egg-info/dependency_links.txt
+src/vault_mcp.egg-info/entry_points.txt
+src/vault_mcp.egg-info/requires.txt
+src/vault_mcp.egg-info/top_level.txt
+tests/test_search.py
+tests/test_storage.py

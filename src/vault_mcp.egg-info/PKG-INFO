@@ -1,0 +1,121 @@
+Metadata-Version: 2.4
+Name: vault-mcp
+Version: 0.1.0
+Summary: An MCP server for a personal markdown knowledge base with hybrid (keyword + semantic) search.
+License: MIT
+Requires-Python: >=3.10
+Description-Content-Type: text/markdown
+License-File: LICENSE
+Requires-Dist: mcp>=1.0.0
+Requires-Dist: numpy>=1.24.0
+Requires-Dist: sentence-transformers>=3.0.0
+Provides-Extra: dev
+Requires-Dist: pytest>=8.0.0; extra == "dev"
+Dynamic: license-file
+
+# vault-mcp
+
+An MCP server for a personal markdown knowledge base — with **hybrid keyword + semantic search**, measured against a retrieval quality benchmark instead of just assumed to work.
+
+Claude (or any MCP client) can save notes to your vault and recall them later by meaning, not just exact wording — "what did I decide about the routing taxonomy" finds a note that never uses those exact words.
+
+## Why hybrid search, and why measure it
+
+Pure vector search misses exact-term queries (function names, error strings, jargon). Pure keyword search misses paraphrases ("why did I skip a client-server database" should find a note about choosing SQLite over Postgres, even with zero shared words). This project combines both with **Reciprocal Rank Fusion** and measures whether that combination is actually better — not just assumed to be.
+
+**Results on a 29-query hand-labeled eval set** (`eval/eval_set.json`, 25 seeded notes):
+
+| Mode          | Recall@3  | MRR       |
+|---------------|-----------|-----------|
+| Keyword only  | 0.948     | 0.879     |
+| Vector only   | 0.931     | 0.885     |
+| **Hybrid**    | **1.000** | **0.937** |
+
+Hybrid strictly outperforms both single-method baselines on this benchmark. The eval set deliberately includes adversarial cases — pure paraphrases with no shared vocabulary, and exact-jargon queries among near-duplicate "confusable" notes — specifically because an eval set with only easy queries doesn't tell you anything (an earlier, easier version of this eval set scored 1.0 recall across all three modes, which was a signal the eval was useless, not that the methods were equivalent). Run it yourself:
+
+```bash
+python scripts/seed_demo.py --db /tmp/demo_vault.db
+python eval/run_eval.py --db /tmp/demo_vault.db --k 3
+```
+
+## Architecture
+
+```
+┌─────────────┐     add_note / search_notes / recall_context
+│ MCP Client  │ ───────────────────────────────────────────►  ┌──────────────┐
+│ (Claude)    │ ◄───────────────────────────────────────────  │ vault_mcp.   │
+└─────────────┘                                                │ server       │
+                                                                 └──────┬───────┘
+                                                                        │
+                                          ┌─────────────────────────────┼─────────────────────────────┐
+                                          ▼                             ▼                             │
+                                 ┌────────────────┐          ┌──────────────────┐                     │
+                                 │ storage.py      │          │ embeddings.py     │                     │
+                                 │ SQLite + FTS5    │          │ sentence-         │                     │
+                                 │ (keyword index)  │          │ transformers      │                     │
+                                 └────────┬─────────┘          │ (local, no API)   │                     │
+                                          │                    └─────────┬─────────┘                     │
+                                          └──────────────┬───────────────┘                               │
+                                                          ▼                                               │
+                                                  ┌────────────────┐                                      │
+                                                  │ search.py        │◄─────────────────────────────────┘
+                                                  │ Reciprocal Rank   │
+                                                  │ Fusion (RRF)      │
+                                                  └────────────────┘
+```
+
+Everything lives in one SQLite file — notes, the FTS5 keyword index, and embedding vectors (stored as raw float blobs, cosine similarity computed in Python). No external vector database, no API costs, works offline.
+
+## Tools exposed
+
+| Tool              | Description                                                          |
+|-------------------|-----------------------------------------------------------------------|
+| `add_note`        | Save a note (title, content, tags) — embedded and indexed immediately |
+| `search_notes`    | Hybrid search, returns structured results with match provenance       |
+| `get_note`        | Fetch full content of a note by ID                                     |
+| `recall_context`  | Search + format results as ready-to-inject conversation context        |
+| `delete_note`     | Remove a note                                                          |
+
+## Quickstart
+
+```bash
+git clone <this-repo>
+cd vault-mcp
+pip install -e .
+python scripts/seed_demo.py   # optional: populate with example notes
+```
+
+Add to your Claude Desktop config (`claude_desktop_config.json`):
+
+```json
+{
+  "mcpServers": {
+    "vault-mcp": {
+      "command": "python",
+      "args": ["-m", "vault_mcp.server"],
+      "env": { "VAULT_MCP_DB": "/path/to/your/vault.db" }
+    }
+  }
+}
+```
+
+## Design decisions
+
+- **RRF over score-blending** — BM25 and cosine similarity scores live on incompatible scales; averaging them directly requires fragile manual tuning. RRF uses rank position instead, which is scale-free. (`search.py`)
+- **SQLite over Postgres/a vector DB** — this is a single-user local tool, not a multi-tenant service. FTS5 gives BM25-quality keyword search for free with zero extra infrastructure.
+- **Local embeddings over an API** — `all-MiniLM-L6-v2` runs fully offline, no per-query cost, no key management. Good enough for note-length text; swapping in a hosted embedding API is a one-line change in `embeddings.py` if higher quality is ever needed.
+
+## Testing
+
+```bash
+pip install -e ".[dev]"
+pytest tests/ -v
+```
+
+CI (`.github/workflows/ci.yml`) runs the test suite across Python 3.10–3.12 and re-runs the retrieval eval on every push, so a change that silently regresses search quality gets caught, not just a change that breaks a unit test.
+
+## Future work
+
+- Sync from Notion/Obsidian as a content source instead of only `add_note`
+- Expand the eval set as the vault grows — 29 queries is a start, not a ceiling
+- This project's routing-vs-fusion problem is a small instance of a broader question I'm researching: routing natural language queries across *heterogeneous* backends (SQL, graph, generated code) — see [PolyQuery](#) *(link once public)*
